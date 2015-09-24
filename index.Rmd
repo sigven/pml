@@ -123,6 +123,7 @@ rf_predictions <- predict.train(modFit_rf, newdata = pml_test)
 confusionMatrix(rf_predictions, pml_test$classe)
 ```
 
+#### Prediction of out-of-sample error
 Considering the random forest-based approach giving the best overall accuracy, we can assess the  out-of-sample error as:
 ```{r out_of_sample_error, echo=T, cache=F}
 out_of_sample_error <- 1 - as.numeric(confusionMatrix(rf_predictions, pml_test$classe)$overall[1])

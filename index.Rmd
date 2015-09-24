@@ -1,22 +1,131 @@
 ---
-title: "Practical machine learning - assignment"
+title: "Practical machine learning - human activity recognition"
 author: "Sigve Nakken"
-date: "19 Sep 2015"
+date: "23 Sep 2015"
 output: html_document
 ---
+#### Background
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, our goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har)
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
 
-```{r}
-summary(cars)
+#### Download and read raw datasets
+
+```{r data_download, echo=T,cache=T}
+
+
+training_dataset_file <- 'pml-training.csv'
+testing_dataset_file <- 'pml-testing.csv'
+
+if (!file.exists(training_dataset_file)) {
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", training_dataset_file, quiet=T,method="curl")
+}
+  
+if (!file.exists(testing_dataset_file)){
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",testing_dataset_file,quiet=T,method="curl")
+}
+
+pml_training_all <- read.csv(file=training_dataset_file,stringsAsFactors = F,header=T,na.strings=c("",NA,"#DIV/0!"))
+pml_testing_all <- read.csv(file=testing_dataset_file,stringsAsFactors = F,header=T,na.strings=c("",NA,"#DIV/0!"))
+
 ```
 
-You can also embed plots, for example:
+#### Load required libraries
 
-```{r, echo=FALSE}
-plot(cars)
+```{r import_packages, echo=T, cache=F}
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(magrittr))
+suppressPackageStartupMessages(require(caret))
+suppressPackageStartupMessages(require(randomForest))
+suppressPackageStartupMessages(require(rpart))
+suppressPackageStartupMessages(require(rattle))
+
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+#### Data cleaning & creation of training/validation set
+
+Get only columns with zero NA's in the training set - to be used as predictor candidates:
+```{r data_cleaning1, echo=T,cache=T}
+
+## get only columns with zero NAs in trainingset - to be used as predictor candidates
+pml_training_cleaned <- pml_training_all[, colSums(is.na(pml_training_all)) == 0]
+dim(pml_training_cleaned)
+```
+
+Now, I further remove predictor candidates with zero variance using _nearZeroVar_ of the caret package:
+```{r data_cleaning2, echo=T, cache=T}
+nsv <- nearZeroVar(pml_training_cleaned, saveMetrics = T)
+skippedPredictors <- row.names(nsv[nsv$nzv == TRUE,])
+nonSkippedPredictors <- pml_training_cleaned[!(colnames(pml_training_cleaned) %in% skippedPredictors)]
+```
+
+
+Finally, I ignore predictors that appear non relevant to the outcome that is to be predicted (timestamp, username, window etc):
+```{r data_cleaning3, echo=T, cache=T}
+pml_training_df <- nonSkippedPredictors %>% dplyr::select(-X, -user_name, -raw_timestamp_part_1, -raw_timestamp_part_2, -cvtd_timestamp)
+dim(pml_training_df)
+```
+
+Creation of training and validation dataset using _createDataPartition_:
+```{r training_validation, echo=T, cache=T}
+in_train <- createDataPartition(y = pml_training_df$classe, p = 0.6, list=F)
+pml_train <- pml_training_df[in_train,]
+pml_test <- pml_training_df[-in_train,]
+
+all.equal(names(pml_train),names(pml_test))
+
+```
+
+#### Correlation between predictors - visualization
+
+```{r data_visualization, echo=T,cache=T, fig.width=10, fig.height=10}
+corrPlot <- cor(pml_train[,-54])
+corrplot::corrplot(corrPlot,method="color")
+```
+
+#### Model building and training
+
+```{r model_train, echo=T, cache=T}
+## set seed
+set.seed(1234)
+```
+
+I start with an attempt to model the data based on a decision tree (using _rpart_ library). This type of model is favorable in terms of interpretation and could thus provide valuable insight into the predictors that matter for the _classe_ variable:
+Here, I also employ cross-validation (k = 5), and preprocessing (scaling and centering of variables) as part of model training.
+```{r model_tree, echo=T, cache=T}
+modFit_tree <- train(as.factor(classe) ~ ., data=pml_train, method="rpart",trControl = trainControl(method="cv", number=5), preProc=c("center", "scale"))
+modFit_tree
+```
+
+Now, plot the tree and look at the accuracy (out-of-sample performance) within the validation set:
+```{r plot_assess_tree, echo=T, cache=T}
+fancyRpartPlot(modFit_tree$finalModel)
+tree_predictions <- predict.train(modFit_tree, newdata = pml_test)
+confusionMatrix(tree_predictions, pml_test$classe)
+```
+
+
+Considering the poor performance of the decision tree, I try to improve prediction accuracy by employing a tree-based model based on boosting. This model also employs cross-validation (k = 5), as wella as preprocessing of predictor variables (centering and scaling):
+```{r model_boost, echo=T, cache = F}
+modFit_boosting <- train(as.factor(classe) ~ ., data=pml_train, method="gbm",verbose =F, trControl = trainControl(method="cv", number=5), preProc=c("center", "scale"))
+modFit_boosting
+boost_predictions <- predict.train(modFit_boosting, newdata = pml_test)
+confusionMatrix(boost_predictions, pml_test$classe)
+```
+
+Finally, I attempt a third model which is based on the _Random Forest_ methodology, an approach which is robust against correlated covariates. In order to limit the execution time of the algorithm, I set _ntree_ to 400 (this could come at a trade-off of less overall accuracy). I also do not employ any cross-validation during model tranining (advice from TA)
+```{r model_rf, echo=T, cache=F}
+tgrid <- expand.grid(mtry=c(6)) 
+modFit_rf <- train(as.factor(classe) ~ ., data=pml_train, method="rf",prox=T, ntree=400, tuneGrid = tgrid, trControl = trainControl(method="none"), preProc=c("center", "scale"))
+modFit_rf
+rf_predictions <- predict.train(modFit_rf, newdata = pml_test)
+confusionMatrix(rf_predictions, pml_test$classe)
+```
+
+Considering the random forest-based approach giving the best overall accuracy, we can assess the  out-of-sample error as:
+```{r out_of_sample_error, echo=T, cache=F}
+out_of_sample_error <- 1 - as.numeric(confusionMatrix(rf_predictions, pml_test$classe)$overall[1])
+out_of_sample_error
+```
+
